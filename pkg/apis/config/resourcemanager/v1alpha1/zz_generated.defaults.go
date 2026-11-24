@@ -41,6 +41,7 @@ func SetObjectDefaults_ResourceManagerConfiguration(in *ResourceManagerConfigura
 	SetDefaults_IstioClusterConfigurationControllerConfig(&in.Controllers.IstioClusterConfiguration)
 	SetDefaults_NetworkPolicyControllerConfig(&in.Controllers.NetworkPolicy)
 	SetDefaults_NodeCriticalComponentsControllerConfig(&in.Controllers.NodeCriticalComponents)
+	SetDefaults_RootCACertLabelerControllerConfig(&in.Controllers.RootCACertLabeler)
 	SetDefaults_NodeAgentReconciliationDelayControllerConfig(&in.Controllers.NodeAgentReconciliationDelay)
 	SetDefaults_TokenRequestorControllerConfig(&in.Controllers.TokenRequestor)
 	SetDefaults_PodSchedulerNameWebhookConfig(&in.Webhooks.PodSchedulerName)

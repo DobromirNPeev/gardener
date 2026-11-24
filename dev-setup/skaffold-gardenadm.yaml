@@ -597,6 +597,7 @@ build:
             - pkg/resourcemanager/controller/node/criticalcomponents
             - pkg/resourcemanager/controller/node/criticalcomponents/helper
             - pkg/resourcemanager/controller/node/highavailabilityconfig
+            - pkg/resourcemanager/controller/rootcacertlabeler
             - pkg/resourcemanager/predicate
             - pkg/resourcemanager/webhook
             - pkg/resourcemanager/webhook/crddeletionprotection
