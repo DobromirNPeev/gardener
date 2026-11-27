@@ -342,7 +342,9 @@ var _ = Describe("Constraints", func() {
 
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods"))
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods/status"))
-		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
+		// configmaps are covered by a label-less matcher (detection for the kube-root-ca.crt incident),
+		// so a configmaps webhook is problematic regardless of namespace/object selectors.
+		withoutSelectorsTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
 		withoutSelectorsTables(corev1.SchemeGroupVersion.WithResource("endpoints"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("secrets"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("serviceaccounts"))
@@ -460,6 +462,71 @@ var _ = Describe("Constraints", func() {
 			}
 
 			Expect(IsProblematicWebhook(wh.build())).To(BeFalse())
+		})
+	})
+
+	// These tests document the behaviour of IsProblematicWebhook for the real-world "kube-root-ca.crt" incident:
+	// a customer-managed webhook on configmaps with failurePolicy=Fail that, during a CA rotation, blocks gardenlet
+	// from updating the per-namespace kube-root-ca.crt ConfigMaps and makes the rotation hang.
+	//
+	// Phase 1 (as-built, before the detection-only configmaps matcher was added) proved the gap: such a webhook
+	// scoped to a non-kube-system namespace was NOT detected as problematic.
+	// Phase 2 (after adding the label-less {GVR: configmaps} matcher) proves the fix: the same webhook is now
+	// detected as problematic cluster-wide, regardless of namespace scoping.
+	Describe("#IsProblematicWebhook - configmaps / kube-root-ca.crt incident", func() {
+		var (
+			failurePolicyFail = admissionregistrationv1.Fail
+			operationCreate   = admissionregistrationv1.Create
+			operationUpdate   = admissionregistrationv1.Update
+
+			configmaps = corev1.SchemeGroupVersion.WithResource("configmaps")
+		)
+
+		DescribeTable("configmaps webhook with failurePolicy=Fail is problematic (Phase 2 fix: label-less configmaps matcher)",
+			func(tc webhookTestCase) {
+				tc.gvr = configmaps
+				tc.failurePolicy = &failurePolicyFail
+				Expect(IsProblematicWebhook(tc.build())).To(BeTrue(), "expected the configmaps webhook to be detected as problematic")
+			},
+
+			// Phase 1 note: before the fix these two were NOT detected (the gap), because the only configmaps matcher
+			// was scoped to the kube-system namespace. The label-less configmaps matcher added in Phase 2 makes them
+			// problematic, which is what blocks the real kube-root-ca.crt incident.
+			Entry("CREATE, namespaceSelector scoped to a customer namespace", webhookTestCase{
+				operationType: &operationCreate,
+				namespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": "customer-ns"},
+				},
+			}),
+			Entry("UPDATE, namespaceSelector excluding kube-system", webhookTestCase{
+				operationType: &operationUpdate,
+				namespaceSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "kubernetes.io/metadata.name", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"kube-system"}},
+					},
+				},
+			}),
+			// These were already detected as problematic even before the fix (the kube-system-scoped matcher matched
+			// a webhook with an empty/absent namespace selector). They must stay problematic after the fix.
+			Entry("CREATE, no selectors (matches all namespaces)", webhookTestCase{
+				operationType: &operationCreate,
+			}),
+			Entry("UPDATE, objectSelector scoped to a customer app", webhookTestCase{
+				operationType: &operationUpdate,
+				objectSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app.kubernetes.io/name": "customer-app"},
+				},
+			}),
+		)
+
+		It("should not be problematic on DELETE only", func() {
+			operationDelete := admissionregistrationv1.Delete
+			tc := webhookTestCase{
+				gvr:           configmaps,
+				failurePolicy: &failurePolicyFail,
+				operationType: &operationDelete,
+			}
+			Expect(IsProblematicWebhook(tc.build())).To(BeFalse(), "a DELETE-only configmaps webhook does not block CA rotation")
 		})
 	})
 
@@ -586,6 +653,85 @@ var _ = Describe("Constraints", func() {
 					WithReason("CRDsWithProblematicConversionWebhooks"),
 					WithMessage(fmt.Sprintf("Some CRDs in your cluster have multiple stored versions present and have a conversion webhook configured: %s.", crd1.Name)),
 				))
+			})
+
+			Context("#CARotationPossible", func() {
+				var (
+					failurePolicyFail = admissionregistrationv1.Fail
+
+					configmapsWebhookConfig = func(nsSelector *metav1.LabelSelector) *admissionregistrationv1.ValidatingWebhookConfiguration {
+						return &admissionregistrationv1.ValidatingWebhookConfiguration{
+							ObjectMeta: metav1.ObjectMeta{Name: "customer-configmaps-webhook"},
+							Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+								Name:          "configmaps.example.com",
+								FailurePolicy: &failurePolicyFail,
+								Rules: []admissionregistrationv1.RuleWithOperations{{
+									Rule: admissionregistrationv1.Rule{
+										APIGroups:   []string{""},
+										APIVersions: []string{"v1"},
+										Resources:   []string{"configmaps"},
+									},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								}},
+								NamespaceSelector: nsSelector,
+							}},
+						}
+					}
+				)
+
+				It("should drop the 'CARotationPossible' constraint when there is no problematic webhook (True)", func() {
+					// filterOptionalConstraints drops optional constraints that are True.
+					Expect(constraint.Check(ctx, constraints)).NotTo(ContainCondition(
+						OfType(gardencorev1beta1.ShootCARotationPossible),
+					))
+				})
+
+				It("should keep 'CARotationPossible' as Progressing (pardoned) for a customer configmaps webhook scoped to a non-kube-system namespace (the kube-root-ca.crt incident)", func() {
+					// The shoot in this block has no stable LastOperation, so PardonConditions converts the
+					// underlying False into Progressing. The validation gate (validateCARotationPossible) only
+					// blocks on a strict False; see the separate test below for the stable-shoot case.
+					webhookConfig := configmapsWebhookConfig(&metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": "customer-ns"},
+					})
+					Expect(shootClient.Create(ctx, webhookConfig)).To(Succeed())
+
+					Expect(constraint.Check(ctx, constraints)).To(ContainCondition(
+						OfType(gardencorev1beta1.ShootCARotationPossible),
+						WithStatus(gardencorev1beta1.ConditionProgressing),
+						WithReason("ProblematicWebhooks"),
+					))
+				})
+
+				It("should set 'CARotationPossible' to False for a configmaps webhook once the shoot is in a stable state", func() {
+					// A successfully created shoot is a "stable" last operation, so the condition is not pardoned
+					// and surfaces as a strict False - which is exactly the state in which a user starts a CA rotation
+					// and in which validateCARotationPossible must block it.
+					stableShoot := shoot.DeepCopy()
+					stableShoot.Status.LastOperation = &gardencorev1beta1.LastOperation{
+						Type:  gardencorev1beta1.LastOperationTypeReconcile,
+						State: gardencorev1beta1.LastOperationStateSucceeded,
+					}
+					shootPkg := &shootpkg.Shoot{ControlPlaneNamespace: controlPlaneNamespace}
+					shootPkg.SetInfo(stableShoot)
+					stableConstraint := NewConstraint(
+						GinkgoLogr,
+						shootPkg,
+						seedClient,
+						func() (kubernetes.Interface, bool, error) {
+							return fakekubernetes.NewClientSetBuilder().WithClient(shootClient).Build(), true, nil
+						},
+						clock,
+					)
+
+					webhookConfig := configmapsWebhookConfig(nil)
+					Expect(shootClient.Create(ctx, webhookConfig)).To(Succeed())
+
+					Expect(stableConstraint.Check(ctx, NewShootConstraints(testclock.NewFakeClock(time.Time{}), stableShoot))).To(ContainCondition(
+						OfType(gardencorev1beta1.ShootCARotationPossible),
+						WithStatus(gardencorev1beta1.ConditionFalse),
+						WithReason("ProblematicWebhooks"),
+					))
+				})
 			})
 
 			Context("#ManualInPlaceWorkersUpdated", func() {
@@ -1063,6 +1209,7 @@ var _ = Describe("Constraints", func() {
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 
@@ -1086,6 +1233,7 @@ var _ = Describe("Constraints", func() {
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 		})
@@ -1097,6 +1245,7 @@ var _ = Describe("Constraints", func() {
 				Expect(constraints.ConvertToSlice()).To(HaveExactElements(
 					OfType("HibernationPossible"),
 					OfType("MaintenancePreconditionsSatisfied"),
+					OfType("CARotationPossible"),
 					OfType("CACertificateValiditiesAcceptable"),
 					OfType("CRDsWithProblematicConversionWebhooks"),
 					OfType("ManualInPlaceWorkersUpdated"),
@@ -1114,6 +1263,7 @@ var _ = Describe("Constraints", func() {
 				Expect(constraints.ConstraintTypes()).To(HaveExactElements(
 					gardencorev1beta1.ConditionType("HibernationPossible"),
 					gardencorev1beta1.ConditionType("MaintenancePreconditionsSatisfied"),
+					gardencorev1beta1.ConditionType("CARotationPossible"),
 					gardencorev1beta1.ConditionType("CACertificateValiditiesAcceptable"),
 					gardencorev1beta1.ConditionType("CRDsWithProblematicConversionWebhooks"),
 					gardencorev1beta1.ConditionType("ManualInPlaceWorkersUpdated"),

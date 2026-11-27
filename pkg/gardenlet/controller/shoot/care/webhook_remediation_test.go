@@ -138,8 +138,11 @@ var _ = Describe("WebhookRemediation", func() {
 						Rule: admissionregistrationv1.Rule{
 							APIGroups:   []string{""},
 							APIVersions: []string{"*"},
-							Resources:   []string{"*"},
-							Scope:       &namespacedScope,
+							// A specific, non-critical core resource with no constraint matcher. Note: a wildcard
+							// Resources: ["*"] would now match the label-less configmaps matcher and be remediated,
+							// since such a webhook could block the per-namespace kube-root-ca.crt ConfigMaps.
+							Resources: []string{"persistentvolumeclaims"},
+							Scope:     &namespacedScope,
 						},
 						Operations: []admissionregistrationv1.OperationType{
 							admissionregistrationv1.Create,

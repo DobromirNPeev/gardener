@@ -6439,6 +6439,22 @@ var _ = Describe("Shoot Validation Tests", func() {
 						},
 					},
 				}),
+				Entry("when the CARotationPossible constraint is False (problematic webhook, e.g. kube-root-ca.crt incident)", false, core.ShootStatus{
+					LastOperation: &core.LastOperation{
+						Type: core.LastOperationTypeReconcile,
+					},
+					Constraints: []core.Condition{
+						{Type: core.ShootCARotationPossible, Status: core.ConditionFalse},
+					},
+				}),
+				Entry("when the CARotationPossible constraint is True", true, core.ShootStatus{
+					LastOperation: &core.LastOperation{
+						Type: core.LastOperationTypeReconcile,
+					},
+					Constraints: []core.Condition{
+						{Type: core.ShootCARotationPossible, Status: core.ConditionTrue},
+					},
+				}),
 			)
 
 			DescribeTable("completing rotation of all credentials",
@@ -6760,6 +6776,30 @@ var _ = Describe("Shoot Validation Tests", func() {
 						PendingWorkerUpdates: &core.PendingWorkerUpdates{
 							ManualInPlaceUpdate: []string{"worker-1"},
 						},
+					},
+				}),
+				Entry("when the CARotationPossible constraint is False (problematic webhook, e.g. kube-root-ca.crt incident)", false, core.ShootStatus{
+					LastOperation: &core.LastOperation{
+						Type: core.LastOperationTypeReconcile,
+					},
+					Constraints: []core.Condition{
+						{Type: core.ShootCARotationPossible, Status: core.ConditionFalse},
+					},
+				}),
+				Entry("when the CARotationPossible constraint is True", true, core.ShootStatus{
+					LastOperation: &core.LastOperation{
+						Type: core.LastOperationTypeReconcile,
+					},
+					Constraints: []core.Condition{
+						{Type: core.ShootCARotationPossible, Status: core.ConditionTrue},
+					},
+				}),
+				Entry("when the CARotationPossible constraint is Progressing (pardoned, not yet strictly False)", true, core.ShootStatus{
+					LastOperation: &core.LastOperation{
+						Type: core.LastOperationTypeReconcile,
+					},
+					Constraints: []core.Condition{
+						{Type: core.ShootCARotationPossible, Status: core.ConditionProgressing},
 					},
 				}),
 			)

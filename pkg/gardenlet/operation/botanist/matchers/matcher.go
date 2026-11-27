@@ -65,6 +65,11 @@ var (
 
 		// Leader election of kube-controller-manager, kube-scheduler, cloud-controller-manager, cluster-autoscaler, ...
 		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), NamespaceLabels: kubeSystemNamespaceLabels},
+		// Detection-only entry for the per-namespace "kube-root-ca.crt" ConfigMaps: a customer webhook on configmaps
+		// with failurePolicy=Fail in any namespace would block gardenlet from updating these ConfigMaps during a CA
+		// rotation and make the rotation hang. A label-less entry matches configmaps CREATE/UPDATE webhooks regardless
+		// of namespace or object scoping, so such a webhook trips the CARotationPossible constraint.
+		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps")},
 		// kube-system and default namespaces for leader election and apiserver in-cluster discovery.
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: defaultNamespaceLabels},
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: kubeSystemNamespaceLabels},

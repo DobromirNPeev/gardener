@@ -73,6 +73,15 @@ func shootHibernatedConstraints(clock clock.Clock, conditions ...gardencorev1bet
 			}
 			continue
 		}
+		// Optional constraint derived from the problematic-webhook check.
+		// Only preserve it if it's non-True (i.e. a problematic webhook could block CA rotation).
+		// When True, drop it — consistent with filterOptionalConstraints behaviour.
+		if cond.Type == gardencorev1beta1.ShootCARotationPossible {
+			if cond.Status != gardencorev1beta1.ConditionTrue {
+				hibernationConditions = append(hibernationConditions, cond)
+			}
+			continue
+		}
 		hibernationConditions = append(hibernationConditions, v1beta1helper.UpdatedConditionWithClock(clock, cond, gardencorev1beta1.ConditionTrue, "ConstraintNotChecked", "Shoot cluster has been hibernated."))
 	}
 	return hibernationConditions
@@ -176,14 +185,14 @@ func (c *Constraint) constraintsChecks(
 
 		return filterOptionalConstraints(
 			[]gardencorev1beta1.Condition{constraints.hibernationPossible, constraints.maintenancePreconditionsSatisfied},
-			[]gardencorev1beta1.Condition{constraints.caCertificateValiditiesAcceptable, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
+			[]gardencorev1beta1.Condition{constraints.caRotationPossible, constraints.caCertificateValiditiesAcceptable, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
 		)
 	}
 	if !apiServerRunning {
 		// don't check constraints if API server has already been deleted or has not been created yet
 		return filterOptionalConstraints(
 			shootControlPlaneNotRunningConstraints(c.clock, constraints.hibernationPossible, constraints.maintenancePreconditionsSatisfied),
-			[]gardencorev1beta1.Condition{constraints.caCertificateValiditiesAcceptable, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
+			[]gardencorev1beta1.Condition{constraints.caRotationPossible, constraints.caCertificateValiditiesAcceptable, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
 		)
 	}
 	c.shootClient = shootClient.Client()
@@ -192,9 +201,11 @@ func (c *Constraint) constraintsChecks(
 	if err != nil {
 		constraints.hibernationPossible = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.hibernationPossible, err)
 		constraints.maintenancePreconditionsSatisfied = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.maintenancePreconditionsSatisfied, err)
+		constraints.caRotationPossible = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.caRotationPossible, err)
 	} else {
 		constraints.hibernationPossible = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.hibernationPossible, status, reason, message, errorCodes...)
 		constraints.maintenancePreconditionsSatisfied = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.maintenancePreconditionsSatisfied, status, reason, message, errorCodes...)
+		constraints.caRotationPossible = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.caRotationPossible, status, reason, message, errorCodes...)
 	}
 
 	status, reason, message, err = c.checkIfCRDsWithProblematicConversionWebhooksPresent(ctx)
@@ -206,7 +217,7 @@ func (c *Constraint) constraintsChecks(
 
 	return filterOptionalConstraints(
 		[]gardencorev1beta1.Condition{constraints.hibernationPossible, constraints.maintenancePreconditionsSatisfied},
-		[]gardencorev1beta1.Condition{constraints.caCertificateValiditiesAcceptable, constraints.crdsWithProblematicConversionWebhooks, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
+		[]gardencorev1beta1.Condition{constraints.caRotationPossible, constraints.caCertificateValiditiesAcceptable, constraints.crdsWithProblematicConversionWebhooks, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
 	)
 }
 
@@ -540,6 +551,7 @@ func filterOptionalConstraints(required, optional []gardencorev1beta1.Condition)
 type ShootConstraints struct {
 	hibernationPossible                   gardencorev1beta1.Condition
 	maintenancePreconditionsSatisfied     gardencorev1beta1.Condition
+	caRotationPossible                    gardencorev1beta1.Condition
 	caCertificateValiditiesAcceptable     gardencorev1beta1.Condition
 	crdsWithProblematicConversionWebhooks gardencorev1beta1.Condition
 	manualInPlaceWorkersUpdated           gardencorev1beta1.Condition
@@ -553,6 +565,7 @@ func (g ShootConstraints) ConvertToSlice() []gardencorev1beta1.Condition {
 	return []gardencorev1beta1.Condition{
 		g.hibernationPossible,
 		g.maintenancePreconditionsSatisfied,
+		g.caRotationPossible,
 		g.caCertificateValiditiesAcceptable,
 		g.crdsWithProblematicConversionWebhooks,
 		g.manualInPlaceWorkersUpdated,
@@ -567,6 +580,7 @@ func (g ShootConstraints) ConstraintTypes() []gardencorev1beta1.ConditionType {
 	return []gardencorev1beta1.ConditionType{
 		g.hibernationPossible.Type,
 		g.maintenancePreconditionsSatisfied.Type,
+		g.caRotationPossible.Type,
 		g.caCertificateValiditiesAcceptable.Type,
 		g.crdsWithProblematicConversionWebhooks.Type,
 		g.manualInPlaceWorkersUpdated.Type,
@@ -582,6 +596,7 @@ func NewShootConstraints(clock clock.Clock, shoot *gardencorev1beta1.Shoot) Shoo
 	return ShootConstraints{
 		hibernationPossible:                   v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootHibernationPossible),
 		maintenancePreconditionsSatisfied:     v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootMaintenancePreconditionsSatisfied),
+		caRotationPossible:                    v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootCARotationPossible),
 		caCertificateValiditiesAcceptable:     v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootCACertificateValiditiesAcceptable),
 		crdsWithProblematicConversionWebhooks: v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootCRDsWithProblematicConversionWebhooks),
 		manualInPlaceWorkersUpdated:           v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootManualInPlaceWorkersUpdated),

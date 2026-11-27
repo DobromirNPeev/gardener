@@ -1,0 +1,30 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: customer-configmaps-guard
+webhooks:
+- name: configmaps.customer.example.com
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  failurePolicy: Fail
+  timeoutSeconds: 10
+  # Exclude kube-system so the webhook represents the customer incident: it does NOT touch
+  # kube-system/kube-root-ca.crt but DOES block the per-customer-namespace kube-root-ca.crt
+  # ConfigMaps that gardenlet must update during a CA rotation.
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values: ["kube-system"]
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["configmaps"]
+    scope: "*"
+  clientConfig:
+    # Points at a non-existent service -> no backing pods -> every admission call fails.
+    service:
+      namespace: default
+      name: nonexistent-webhook-backend
+      path: /validate

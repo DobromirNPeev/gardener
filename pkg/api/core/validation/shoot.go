@@ -3514,6 +3514,7 @@ func validateShootOperationContext(operation string, shoot *core.Shoot, fldPath 
 		if phase := helper.GetShootETCDEncryptionKeyRotationPhase(shoot.Status.Credentials); len(phase) > 0 && phase != core.RotationCompleted {
 			allErrs = append(allErrs, field.Forbidden(fldPath, "cannot start rotation of all credentials if .status.credentials.rotation.etcdEncryptionKey.phase is not 'Completed'"))
 		}
+		allErrs = append(allErrs, validateCARotationPossible(shoot, fldPath, "rotation of all credentials")...)
 		allErrs = append(allErrs, validatePendingWorkerUpdates(shoot, fldPath, "rotation of all credentials")...)
 
 	case v1beta1constants.OperationRotateCredentialsComplete:
@@ -3534,6 +3535,7 @@ func validateShootOperationContext(operation string, shoot *core.Shoot, fldPath 
 		if phase := helper.GetShootCARotationPhase(shoot.Status.Credentials); len(phase) > 0 && phase != core.RotationCompleted {
 			allErrs = append(allErrs, field.Forbidden(fldPath, "cannot start CA rotation if .status.credentials.rotation.certificateAuthorities.phase is not 'Completed'"))
 		}
+		allErrs = append(allErrs, validateCARotationPossible(shoot, fldPath, "CA rotation")...)
 		allErrs = append(allErrs, validatePendingWorkerUpdates(shoot, fldPath, "CA rotation")...)
 
 	case v1beta1constants.OperationRotateCAComplete:
@@ -3651,6 +3653,19 @@ func validatePendingWorkerUpdates(shoot *core.Shoot, fldPath *field.Path, operat
 		if len(shoot.Status.InPlaceUpdates.PendingWorkerUpdates.ManualInPlaceUpdate) > 0 {
 			allErrs = append(allErrs, field.Forbidden(fldPath, fmt.Sprintf(forbiddenPendingWorkerUpdatesMessageTemplate, operation, "manualInPlaceUpdate")))
 		}
+	}
+
+	return allErrs
+}
+
+// validateCARotationPossible forbids starting a CA rotation while the shoot's CARotationPossible constraint is False.
+// This prevents the rotation from hanging when a problematic webhook in the shoot cluster blocks updates to the
+// per-namespace kube-root-ca.crt ConfigMaps. The constraint is maintained by the shoot care controller.
+func validateCARotationPossible(shoot *core.Shoot, fldPath *field.Path, operation string) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	if condition := helper.GetCondition(shoot.Status.Constraints, core.ShootCARotationPossible); condition != nil && condition.Status == core.ConditionFalse {
+		allErrs = append(allErrs, field.Forbidden(fldPath, fmt.Sprintf("cannot start %s while the %q constraint is 'False': a problematic webhook may block updates to the kube-root-ca.crt ConfigMaps and make the rotation hang; please fix the webhook first (see .status.constraints for details)", operation, core.ShootCARotationPossible)))
 	}
 
 	return allErrs

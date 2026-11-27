@@ -1716,6 +1716,10 @@ const (
 	// ShootMaintenancePreconditionsSatisfied is a constant for a condition type indicating whether all preconditions
 	// for a shoot maintenance operation are satisfied.
 	ShootMaintenancePreconditionsSatisfied ConditionType = "MaintenancePreconditionsSatisfied"
+	// ShootCARotationPossible is a constant for a condition type indicating whether a CA rotation can be started.
+	// When False, a problematic webhook in the shoot cluster may block updates to the per-namespace
+	// kube-root-ca.crt ConfigMaps, which would make a CA rotation hang.
+	ShootCARotationPossible ConditionType = "CARotationPossible"
 )
 
 // DNSUnmanaged is a constant for the 'unmanaged' DNS provider.

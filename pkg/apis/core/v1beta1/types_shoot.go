@@ -2276,6 +2276,10 @@ const (
 	// ShootAutomaticCredentialsRotationPossible is a constant for a condition type indicating whether an automatic
 	// ETCD encryption key rotation can run during the next maintenance window.
 	ShootAutomaticCredentialsRotationPossible ConditionType = "AutomaticCredentialsRotationPossible"
+	// ShootCARotationPossible is a constant for a condition type indicating whether a CA rotation can be started.
+	// When False, a problematic webhook in the shoot cluster may block updates to the per-namespace
+	// kube-root-ca.crt ConfigMaps, which would make a CA rotation hang.
+	ShootCARotationPossible ConditionType = "CARotationPossible"
 	// ShootReadyForMigration is a constant for a condition type indicating whether the Shoot can be migrated.
 	ShootReadyForMigration ConditionType = "ReadyForMigration"
 	// ShootDualStackNodesMigrationReady is a constant for a condition type indicating whether all nodes are migrated to dual-stack .
