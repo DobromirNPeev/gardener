@@ -133,6 +133,9 @@ type ResourceManagerControllerConfiguration struct {
 	// NodeCriticalComponents is the configuration for the node critical components controller.
 	// +required
 	NodeCriticalComponents NodeCriticalComponentsControllerConfig `json:"nodeCriticalComponents"`
+	// RootCACertLabeler is the configuration for the root-ca-cert-labeler controller.
+	// +required
+	RootCACertLabeler RootCACertLabelerControllerConfig `json:"rootCACertLabeler"`
 	// NodeAgentReconciliationDelay is the configuration for the node-agent reconciliation delay controller.
 	// +required
 	NodeAgentReconciliationDelay NodeAgentReconciliationDelayControllerConfig `json:"nodeAgentReconciliationDelay"`
@@ -253,6 +256,16 @@ type NodeCriticalComponentsControllerConfig struct {
 	// Backoff is the duration to use as backoff when Nodes have non-ready node-critical pods (defaults to 10s).
 	// +optional
 	Backoff *metav1.Duration `json:"backoff,omitempty"`
+}
+
+// RootCACertLabelerControllerConfig is the configuration for the root-ca-cert-labeler controller.
+type RootCACertLabelerControllerConfig struct {
+	// Enabled defines whether this controller is enabled.
+	// +required
+	Enabled bool `json:"enabled"`
+	// ConcurrentSyncs is the number of concurrent worker routines for this controller.
+	// +optional
+	ConcurrentSyncs *int32 `json:"concurrentSyncs,omitempty"`
 }
 
 // NodeAgentReconciliationDelayControllerConfig is the configuration for the node-agent reconciliation delay controller.

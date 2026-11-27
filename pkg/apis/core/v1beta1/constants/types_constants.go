@@ -392,6 +392,9 @@ const (
 	// LabelExcludeWebhookFromRemediation is a constant for a label on a webhook in the shoot which makes it being
 	// excluded from automatic remediation.
 	LabelExcludeWebhookFromRemediation = "remediation.webhook.shoot.gardener.cloud/exclude"
+	// LabelKeyKubeRootCACrt marks kube-root-ca.crt ConfigMaps so that webhook remediation can exclude them
+	// from customer webhooks, keeping them writable during credential rotation.
+	LabelKeyKubeRootCACrt = "config.gardener.cloud/kube-root-ca"
 
 	// ShootTasks is a constant for an annotation on a Shoot which states that certain tasks should be done.
 	ShootTasks = "shoot.gardener.cloud/tasks"

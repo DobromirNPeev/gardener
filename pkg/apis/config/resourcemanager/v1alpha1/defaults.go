@@ -166,6 +166,13 @@ func SetDefaults_NodeCriticalComponentsControllerConfig(obj *NodeCriticalCompone
 	}
 }
 
+// SetDefaults_RootCACertLabelerControllerConfig sets defaults for the RootCACertLabelerControllerConfig object.
+func SetDefaults_RootCACertLabelerControllerConfig(obj *RootCACertLabelerControllerConfig) {
+	if obj.Enabled && obj.ConcurrentSyncs == nil {
+		obj.ConcurrentSyncs = new(int32(5))
+	}
+}
+
 // SetDefaults_NodeAgentReconciliationDelayControllerConfig sets defaults for the NodeAgentReconciliationDelayControllerConfig object.
 func SetDefaults_NodeAgentReconciliationDelayControllerConfig(obj *NodeAgentReconciliationDelayControllerConfig) {
 	if obj.Enabled {

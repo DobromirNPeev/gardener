@@ -26,6 +26,7 @@ import (
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/managedresource"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/networkpolicy"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/node"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/rootcacertlabeler"
 	resourcemanagerpredicate "github.com/gardener/gardener/pkg/resourcemanager/predicate"
 )
 
@@ -97,6 +98,14 @@ func AddToManager(ctx context.Context, mgr manager.Manager, sourceCluster, targe
 
 	if err := node.AddToManager(mgr, targetCluster, *cfg); err != nil {
 		return fmt.Errorf("failed adding node controller: %w", err)
+	}
+
+	if cfg.Controllers.RootCACertLabeler.Enabled {
+		if err := (&rootcacertlabeler.Reconciler{
+			Config: cfg.Controllers.RootCACertLabeler,
+		}).AddToManager(mgr, targetCluster); err != nil {
+			return fmt.Errorf("failed adding root-ca-cert-labeler controller: %w", err)
+		}
 	}
 
 	return nil

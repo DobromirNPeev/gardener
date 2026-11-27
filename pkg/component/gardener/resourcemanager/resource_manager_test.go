@@ -480,6 +480,10 @@ var _ = Describe("ResourceManager", func() {
 					Enabled:       !isWorkerless,
 					SchedulerName: new("bin-packing-scheduler"),
 				}
+
+				config.Controllers.RootCACertLabeler = resourcemanagerconfigv1alpha1.RootCACertLabelerControllerConfig{
+					Enabled: true,
+				}
 			} else {
 				config.Controllers.NetworkPolicy = resourcemanagerconfigv1alpha1.NetworkPolicyControllerConfig{
 					Enabled:         true,

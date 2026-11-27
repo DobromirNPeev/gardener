@@ -65,6 +65,8 @@ var (
 
 		// Leader election of kube-controller-manager, kube-scheduler, cloud-controller-manager, cluster-autoscaler, ...
 		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), NamespaceLabels: kubeSystemNamespaceLabels},
+		// kube-root-ca.crt ConfigMaps (labeled by the GRM root-ca-cert-labeler) must stay writable for CA rotation.
+		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectLabels: labels.Set{v1beta1constants.LabelKeyKubeRootCACrt: "true"}},
 		// kube-system and default namespaces for leader election and apiserver in-cluster discovery.
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: defaultNamespaceLabels},
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: kubeSystemNamespaceLabels},

@@ -41,6 +41,7 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
@@ -335,6 +336,30 @@ var _ = Describe("Constraints", func() {
 				commonTests(gvr, kubeSystemNamespaceProblematic, kubeSystemNamespaceNotProblematic)
 			}
 
+			configMapsTestTables = func(gvr schema.GroupVersionResource) {
+				// In addition to the kube-system-scoped leader-election ConfigMaps, the kube-root-ca.crt ConfigMaps
+				// (labeled config.gardener.cloud/kube-root-ca=true) are protected in all namespaces. Hence, a webhook
+				// that only excludes the kube-system namespace is still problematic because it would match
+				// kube-root-ca.crt ConfigMaps in other namespaces.
+				commonTests(gvr,
+					append(kubeSystemNamespaceProblematic, kubeSystemNamespaceNotProblematic...),
+					[]TableEntry{
+						Entry("namespaceSelector excluding kube-system and objectSelector excluding kube-root-ca", webhookTestCase{
+							namespaceSelector: &metav1.LabelSelector{
+								MatchExpressions: []metav1.LabelSelectorRequirement{
+									{Key: "kubernetes.io/metadata.name", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"kube-system"}},
+								},
+							},
+							objectSelector: &metav1.LabelSelector{
+								MatchExpressions: []metav1.LabelSelectorRequirement{
+									{Key: v1beta1constants.LabelKeyKubeRootCACrt, Operator: metav1.LabelSelectorOpNotIn, Values: []string{"true"}},
+								},
+							},
+						}),
+					},
+				)
+			}
+
 			withoutSelectorsTables = func(gvr schema.GroupVersionResource) {
 				commonTests(gvr, []TableEntry{}, []TableEntry{})
 			}
@@ -342,7 +367,7 @@ var _ = Describe("Constraints", func() {
 
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods"))
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods/status"))
-		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
+		configMapsTestTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
 		withoutSelectorsTables(corev1.SchemeGroupVersion.WithResource("endpoints"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("secrets"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("serviceaccounts"))

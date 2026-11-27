@@ -14,10 +14,12 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
@@ -156,6 +158,15 @@ var _ = Describe("WebhookRemediation", func() {
 						},
 					},
 				},
+				ObjectSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{
+							Key:      v1beta1constants.LabelKeyKubeRootCACrt,
+							Values:   []string{"true"},
+							Operator: metav1.LabelSelectorOpNotIn,
+						},
+					},
+				},
 			}}
 
 			Expect(fakeClient.Create(ctx, validatingWebhookConfiguration)).To(Succeed())
@@ -279,6 +290,37 @@ var _ = Describe("WebhookRemediation", func() {
 					Expect(validatingWebhookConfiguration.Webhooks[0].ObjectSelector).To(Equal(&metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{
 							{Key: "foo", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"bar"}},
+						},
+					}))
+				})
+
+				It("objectSelector for kube-root-ca.crt ConfigMaps", func() {
+					defer test.WithVar(&matchers.WebhookConstraintMatchers, []matchers.WebhookConstraintMatcher{
+						{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectLabels: labels.Set{v1beta1constants.LabelKeyKubeRootCACrt: "true"}},
+					})()
+
+					validatingWebhookConfiguration.Webhooks = []admissionregistrationv1.ValidatingWebhook{{
+						Name:          "some-webhook.example.com",
+						FailurePolicy: &fail,
+						Rules: []admissionregistrationv1.RuleWithOperations{{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"configmaps"},
+							},
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						}},
+					}}
+					Expect(fakeClient.Create(ctx, validatingWebhookConfiguration)).To(Succeed())
+
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+
+					Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(validatingWebhookConfiguration), validatingWebhookConfiguration)).To(Succeed())
+					Expect(validatingWebhookConfiguration.Annotations).To(HaveKey("gardener.cloud/warning"))
+					Expect(validatingWebhookConfiguration.Webhooks[0].FailurePolicy).To(Equal(&fail))
+					Expect(validatingWebhookConfiguration.Webhooks[0].ObjectSelector).To(Equal(&metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: v1beta1constants.LabelKeyKubeRootCACrt, Operator: metav1.LabelSelectorOpNotIn, Values: []string{"true"}},
 						},
 					}))
 				})

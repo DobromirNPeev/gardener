@@ -674,6 +674,7 @@ func (r *resourceManager) ensureConfigMap(ctx context.Context, config *resourcem
 
 	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		config.Controllers.NodeCriticalComponents.Enabled = true
+		config.Controllers.RootCACertLabeler.Enabled = true
 	}
 
 	if r.values.SystemComponentsConfigWebhookEnabled {
