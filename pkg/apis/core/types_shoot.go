@@ -1716,6 +1716,9 @@ const (
 	// ShootMaintenancePreconditionsSatisfied is a constant for a condition type indicating whether all preconditions
 	// for a shoot maintenance operation are satisfied.
 	ShootMaintenancePreconditionsSatisfied ConditionType = "MaintenancePreconditionsSatisfied"
+	// ShootKubeRootCACertificatesUpToDate is a constant for a constraint type indicating that all kube-root-ca.crt
+	// ConfigMaps in the Shoot cluster's non-kube-system namespaces contain the current cluster CA bundle.
+	ShootKubeRootCACertificatesUpToDate ConditionType = "KubeRootCACertificatesUpToDate"
 )
 
 // DNSUnmanaged is a constant for the 'unmanaged' DNS provider.

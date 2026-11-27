@@ -2286,6 +2286,12 @@ const (
 	ShootUsesUnifiedHTTPProxyPort ConditionType = "UsesUnifiedHTTPProxyPort"
 	// ShootPreservedFailedMachinesAbsent is a constant for a condition type indicating that the Shoot cluster no preserved failed machines.
 	ShootPreservedFailedMachinesAbsent ConditionType = "PreservedFailedMachinesAbsent"
+	// ShootKubeRootCACertificatesUpToDate is a constant for a constraint type indicating that all kube-root-ca.crt
+	// ConfigMaps in the Shoot cluster's non-kube-system namespaces contain the current cluster CA bundle. When False,
+	// at least one namespace still holds an outdated kube-root-ca.crt ConfigMap - typically because a customer-managed
+	// webhook prevented gardener from updating it during CA rotation. Workloads in such namespaces may fail to
+	// authenticate against the kube-apiserver once the old CA is dropped.
+	ShootKubeRootCACertificatesUpToDate ConditionType = "KubeRootCACertificatesUpToDate"
 
 	// ShootLiveMigrationSourceEtcdPreparedForPeerJoin indicates that the source etcd cluster
 	// is prepared for destination peers to join.

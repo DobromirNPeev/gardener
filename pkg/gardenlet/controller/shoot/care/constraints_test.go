@@ -1063,6 +1063,7 @@ var _ = Describe("Constraints", func() {
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
+					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 				))
 			})
 
@@ -1079,6 +1080,7 @@ var _ = Describe("Constraints", func() {
 
 				Expect(constraints.ConvertToSlice()).To(ConsistOf(
 					hibernationPossibleConstraint,
+					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
 					beConditionWithStatusAndMsg("Unknown", "ConditionInitialized", "The condition has been initialized but its semantic check has not been performed yet."),
@@ -1103,6 +1105,7 @@ var _ = Describe("Constraints", func() {
 					OfType("AutomaticCredentialsRotationPossible"),
 					OfType("ManagedResourcesHonored"),
 					OfType("PreservedFailedMachinesAbsent"),
+					OfType("KubeRootCACertificatesUpToDate"),
 				))
 			})
 		})
@@ -1120,6 +1123,7 @@ var _ = Describe("Constraints", func() {
 					gardencorev1beta1.ConditionType("AutomaticCredentialsRotationPossible"),
 					gardencorev1beta1.ConditionType("ManagedResourcesHonored"),
 					gardencorev1beta1.ConditionType("PreservedFailedMachinesAbsent"),
+					gardencorev1beta1.ConditionType("KubeRootCACertificatesUpToDate"),
 				))
 			})
 		})

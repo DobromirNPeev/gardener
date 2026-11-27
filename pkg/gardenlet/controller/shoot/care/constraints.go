@@ -204,9 +204,17 @@ func (c *Constraint) constraintsChecks(
 		constraints.crdsWithProblematicConversionWebhooks = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.crdsWithProblematicConversionWebhooks, status, reason, message)
 	}
 
+	// Best-effort check: never fail the care loop if the scan errors, just report Unknown.
+	status, reason, message, err = c.checkIfKubeRootCACertificatesUpToDate(ctx)
+	if err != nil {
+		constraints.kubeRootCACertificatesUpToDate = v1beta1helper.UpdatedConditionUnknownErrorWithClock(c.clock, constraints.kubeRootCACertificatesUpToDate, err)
+	} else {
+		constraints.kubeRootCACertificatesUpToDate = v1beta1helper.UpdatedConditionWithClock(c.clock, constraints.kubeRootCACertificatesUpToDate, status, reason, message)
+	}
+
 	return filterOptionalConstraints(
 		[]gardencorev1beta1.Condition{constraints.hibernationPossible, constraints.maintenancePreconditionsSatisfied},
-		[]gardencorev1beta1.Condition{constraints.caCertificateValiditiesAcceptable, constraints.crdsWithProblematicConversionWebhooks, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible},
+		[]gardencorev1beta1.Condition{constraints.caCertificateValiditiesAcceptable, constraints.crdsWithProblematicConversionWebhooks, constraints.manualInPlaceWorkersUpdated, constraints.managedResourcesHonored, constraints.preservedFailedMachinesAbsent, constraints.automaticCredentialsRotationPossible, constraints.kubeRootCACertificatesUpToDate},
 	)
 }
 
@@ -303,6 +311,61 @@ func (c *Constraint) checkIfManualInPlaceWorkersUpdated() (gardencorev1beta1.Con
 		"WorkerPoolsWithManualInPlaceUpdateStrategyPending",
 		fmt.Sprintf("Some worker pools in your Shoot with update strategy ManualInPlaceUpdate are pending update: %s",
 			strings.Join(c.shoot.GetInfo().Status.InPlaceUpdates.PendingWorkerUpdates.ManualInPlaceUpdate, ", "))
+}
+
+// checkIfKubeRootCACertificatesUpToDate scans the kube-root-ca.crt ConfigMaps across all non-kube-system namespaces of
+// the shoot and reports whether they carry the same CA bundle as the control-plane-managed kube-root-ca.crt ConfigMap in
+// the kube-system namespace. The kube-system ConfigMap is kept current by the CA rotation flow
+// (WaitUntilKubeRootCAConfigMapsUpdated), whereas ConfigMaps in customer namespaces may remain stale if a
+// customer-managed webhook prevented gardener from updating them during rotation. This check is read-only and
+// best-effort; any list error is surfaced as an Unknown condition rather than failing the care loop.
+func (c *Constraint) checkIfKubeRootCACertificatesUpToDate(ctx context.Context) (gardencorev1beta1.ConditionStatus, string, string, error) {
+	configMapList := &corev1.ConfigMapList{}
+	if err := c.shootClient.List(ctx, configMapList, client.MatchingFields{"metadata.name": "kube-root-ca.crt"}); err != nil {
+		return "", "", "", fmt.Errorf("could not list kube-root-ca.crt ConfigMaps in the shoot to check for outdated CA bundles: %w", err)
+	}
+
+	var currentCABundle string
+	for _, configMap := range configMapList.Items {
+		if configMap.Namespace == metav1.NamespaceSystem {
+			currentCABundle = configMap.Data[secretsutils.DataKeyCertificateCA]
+			break
+		}
+	}
+
+	// Without the kube-system reference ConfigMap we cannot determine staleness; treat as up-to-date to avoid false
+	// positives (the rotation flow guarantees the kube-system ConfigMap exists in a healthy cluster).
+	if currentCABundle == "" {
+		return gardencorev1beta1.ConditionTrue,
+			"AllKubeRootCACertificatesUpToDate",
+			"All kube-root-ca.crt ConfigMaps contain the current cluster CA bundle.",
+			nil
+	}
+
+	outdatedNamespaces := sets.New[string]()
+	for _, configMap := range configMapList.Items {
+		if configMap.Namespace == metav1.NamespaceSystem {
+			continue
+		}
+		if configMap.Data[secretsutils.DataKeyCertificateCA] != currentCABundle {
+			outdatedNamespaces.Insert(configMap.Namespace)
+		}
+	}
+
+	if outdatedNamespaces.Len() > 0 {
+		return gardencorev1beta1.ConditionFalse,
+			"KubeRootCACertificateOutdated",
+			fmt.Sprintf("The kube-root-ca.crt ConfigMap in the following namespace(s) does not yet contain the current cluster CA bundle, "+
+				"likely because a webhook prevented gardener from updating it during CA rotation. Workloads in these namespaces may fail "+
+				"to authenticate against the kube-apiserver once the old CA is removed. Please remove the blocking webhook or update the "+
+				"ConfigMap(s) manually: %s", strings.Join(sets.List(outdatedNamespaces), ", ")),
+			nil
+	}
+
+	return gardencorev1beta1.ConditionTrue,
+		"AllKubeRootCACertificatesUpToDate",
+		"All kube-root-ca.crt ConfigMaps contain the current cluster CA bundle.",
+		nil
 }
 
 // checkIfCRDsWithProblematicConversionWebhooksPresent checks whether there are CRDs with multiple stored versions and
@@ -546,6 +609,7 @@ type ShootConstraints struct {
 	automaticCredentialsRotationPossible  gardencorev1beta1.Condition
 	managedResourcesHonored               gardencorev1beta1.Condition
 	preservedFailedMachinesAbsent         gardencorev1beta1.Condition
+	kubeRootCACertificatesUpToDate        gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the shoot constraints as a slice.
@@ -559,6 +623,7 @@ func (g ShootConstraints) ConvertToSlice() []gardencorev1beta1.Condition {
 		g.automaticCredentialsRotationPossible,
 		g.managedResourcesHonored,
 		g.preservedFailedMachinesAbsent,
+		g.kubeRootCACertificatesUpToDate,
 	}
 }
 
@@ -573,6 +638,7 @@ func (g ShootConstraints) ConstraintTypes() []gardencorev1beta1.ConditionType {
 		g.automaticCredentialsRotationPossible.Type,
 		g.managedResourcesHonored.Type,
 		g.preservedFailedMachinesAbsent.Type,
+		g.kubeRootCACertificatesUpToDate.Type,
 	}
 }
 
@@ -588,5 +654,6 @@ func NewShootConstraints(clock clock.Clock, shoot *gardencorev1beta1.Shoot) Shoo
 		automaticCredentialsRotationPossible:  v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootAutomaticCredentialsRotationPossible),
 		managedResourcesHonored:               v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootManagedResourcesHonored),
 		preservedFailedMachinesAbsent:         v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootPreservedFailedMachinesAbsent),
+		kubeRootCACertificatesUpToDate:        v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Constraints, gardencorev1beta1.ShootKubeRootCACertificatesUpToDate),
 	}
 }
