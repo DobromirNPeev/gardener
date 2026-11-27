@@ -87,10 +87,14 @@ func (b *Botanist) ScaleKubeControllerManagerToOne(ctx context.Context) error {
 	return kubernetesutils.ScaleDeployment(ctx, b.SeedClientSet.Client(), client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.DeploymentNameKubeControllerManager}, 1)
 }
 
-// WaitUntilKubeRootCAConfigMapsUpdated verifies that all kube-root-ca.crt ConfigMaps in all namespaces of the shoot
-// cluster contain the CA bundle published by kube-controller-manager. It labels each confirmed ConfigMap with
-// credentials.gardener.cloud/ca-bundle-name so that retries skip already-verified ConfigMaps. This should only be
+// WaitUntilKubeRootCAConfigMapsUpdated verifies that the kube-root-ca.crt ConfigMap in the kube-system namespace of the
+// shoot cluster contains the CA bundle published by kube-controller-manager. It labels the confirmed ConfigMap with
+// credentials.gardener.cloud/ca-bundle-name so that retries skip the already-verified ConfigMap. This should only be
 // called during the 'Preparing' phase of the CA rotation operation, after kube-controller-manager is ready.
+//
+// Only the kube-system namespace is considered: kube-system/kube-root-ca.crt is what Gardener's own control-plane
+// components rely on to trust the new CA. kube-root-ca.crt ConfigMaps in the customer's own namespaces are deliberately
+// not waited on, so that a customer admission webhook blocking writes to those ConfigMaps cannot hang CA rotation.
 func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) error {
 	caBundleSecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameCACluster)
 	if !found {
@@ -99,6 +103,7 @@ func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) err
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := b.ShootClientSet.Client().List(ctx, configMapList,
+		client.InNamespace(metav1.NamespaceSystem),
 		client.MatchingFields{"metadata.name": "kube-root-ca.crt"},
 		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(utils.MustNewRequirement(secretsrotation.LabelKeyCABundleName, selection.NotEquals, caBundleSecret.Name))},
 	); err != nil {

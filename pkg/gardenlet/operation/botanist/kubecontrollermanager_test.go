@@ -365,7 +365,7 @@ var _ = Describe("KubeControllerManager", func() {
 			Expect(shootClient.Create(ctx, &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "kube-root-ca.crt",
-					Namespace: "ns1",
+					Namespace: metav1.NamespaceSystem,
 					Labels:    map[string]string{secretsrotation.LabelKeyCABundleName: v1beta1constants.SecretNameCACluster},
 				},
 				Data: map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
@@ -374,9 +374,9 @@ var _ = Describe("KubeControllerManager", func() {
 			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(Succeed())
 		})
 
-		It("should label ConfigMaps that contain the expected bundle", func() {
+		It("should label the kube-system ConfigMap that contains the expected bundle", func() {
 			cm1 := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 				Data:       map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
 			}
 			Expect(shootClient.Create(ctx, cm1)).To(Succeed())
@@ -387,41 +387,36 @@ var _ = Describe("KubeControllerManager", func() {
 			Expect(cm1.Labels).To(HaveKeyWithValue(secretsrotation.LabelKeyCABundleName, v1beta1constants.SecretNameCACluster))
 		})
 
-		It("should return an error when a ConfigMap has no ca.crt data", func() {
+		It("should return an error when the kube-system ConfigMap has no ca.crt data", func() {
 			Expect(shootClient.Create(ctx, &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 			})).To(Succeed())
 
 			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(MatchError(ContainSubstring("1 kube-root-ca.crt ConfigMap(s) do not yet contain the expected CA bundle")))
 		})
 
-		It("should return an error when a ConfigMap does not contain the expected bundle", func() {
+		It("should return an error when the kube-system ConfigMap does not contain the expected bundle", func() {
 			Expect(shootClient.Create(ctx, &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 				Data:       map[string]string{secretsutils.DataKeyCertificateCA: "old-ca-only"},
 			})).To(Succeed())
 
 			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(MatchError(ContainSubstring("1 kube-root-ca.crt ConfigMap(s) do not yet contain the expected CA bundle")))
 		})
 
-		It("should only process unlabeled ConfigMaps and ignore non-kube-root-ca.crt ConfigMaps", func() {
+		It("should only process the unlabeled kube-system ConfigMap and ignore non-kube-root-ca.crt ConfigMaps", func() {
 			cmLabeled := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "kube-root-ca.crt",
-					Namespace: "ns1",
+					Namespace: metav1.NamespaceSystem,
 					Labels:    map[string]string{secretsrotation.LabelKeyCABundleName: v1beta1constants.SecretNameCACluster},
 				},
 				Data: map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
 			}
-			cmUnlabeled := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns2"},
-				Data:       map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
-			}
 			cmOtherName := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "some-other-configmap", Namespace: "ns3"},
+				ObjectMeta: metav1.ObjectMeta{Name: "some-other-configmap", Namespace: metav1.NamespaceSystem},
 			}
 			Expect(shootClient.Create(ctx, cmLabeled)).To(Succeed())
-			Expect(shootClient.Create(ctx, cmUnlabeled)).To(Succeed())
 			Expect(shootClient.Create(ctx, cmOtherName)).To(Succeed())
 
 			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(Succeed())
@@ -429,11 +424,45 @@ var _ = Describe("KubeControllerManager", func() {
 			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmLabeled), cmLabeled)).To(Succeed())
 			Expect(cmLabeled.Labels).To(HaveKeyWithValue(secretsrotation.LabelKeyCABundleName, v1beta1constants.SecretNameCACluster))
 
-			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmUnlabeled), cmUnlabeled)).To(Succeed())
-			Expect(cmUnlabeled.Labels).To(HaveKeyWithValue(secretsrotation.LabelKeyCABundleName, v1beta1constants.SecretNameCACluster))
-
 			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmOtherName), cmOtherName)).To(Succeed())
 			Expect(cmOtherName.Labels).NotTo(HaveKey(secretsrotation.LabelKeyCABundleName))
+		})
+
+		It("should ignore kube-root-ca.crt ConfigMaps in non-kube-system namespaces", func() {
+			// This is the crux of Option 1: a kube-root-ca.crt ConfigMap in a customer namespace must be
+			// neither waited on, labeled, nor cause an error - even when it is missing the new CA bundle.
+			// Otherwise a customer admission webhook blocking writes to such a ConfigMap could hang CA rotation.
+			cmKubeSystem := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
+				Data:       map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
+			}
+			cmDefaultStale := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceDefault},
+				Data:       map[string]string{secretsutils.DataKeyCertificateCA: "old-ca-only"},
+			}
+			cmCustomerStale := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "customer-ns"},
+				Data:       map[string]string{secretsutils.DataKeyCertificateCA: "old-ca-only"},
+			}
+			Expect(shootClient.Create(ctx, cmKubeSystem)).To(Succeed())
+			Expect(shootClient.Create(ctx, cmDefaultStale)).To(Succeed())
+			Expect(shootClient.Create(ctx, cmCustomerStale)).To(Succeed())
+
+			// Succeeds despite the stale kube-root-ca.crt ConfigMaps outside kube-system.
+			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(Succeed())
+
+			// kube-system ConfigMap is processed and labeled.
+			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmKubeSystem), cmKubeSystem)).To(Succeed())
+			Expect(cmKubeSystem.Labels).To(HaveKeyWithValue(secretsrotation.LabelKeyCABundleName, v1beta1constants.SecretNameCACluster))
+
+			// ConfigMaps outside kube-system are left completely untouched: not labeled, not mutated.
+			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmDefaultStale), cmDefaultStale)).To(Succeed())
+			Expect(cmDefaultStale.Labels).NotTo(HaveKey(secretsrotation.LabelKeyCABundleName))
+			Expect(cmDefaultStale.Data).To(HaveKeyWithValue(secretsutils.DataKeyCertificateCA, "old-ca-only"))
+
+			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(cmCustomerStale), cmCustomerStale)).To(Succeed())
+			Expect(cmCustomerStale.Labels).NotTo(HaveKey(secretsrotation.LabelKeyCABundleName))
+			Expect(cmCustomerStale.Data).To(HaveKeyWithValue(secretsutils.DataKeyCertificateCA, "old-ca-only"))
 		})
 	})
 })
