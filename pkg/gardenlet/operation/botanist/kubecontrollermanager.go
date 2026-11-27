@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"golang.org/x/time/rate"
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
@@ -87,10 +89,16 @@ func (b *Botanist) ScaleKubeControllerManagerToOne(ctx context.Context) error {
 	return kubernetesutils.ScaleDeployment(ctx, b.SeedClientSet.Client(), client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.DeploymentNameKubeControllerManager}, 1)
 }
 
-// WaitUntilKubeRootCAConfigMapsUpdated verifies that all kube-root-ca.crt ConfigMaps in all namespaces of the shoot
-// cluster contain the CA bundle published by kube-controller-manager. It labels each confirmed ConfigMap with
-// credentials.gardener.cloud/ca-bundle-name so that retries skip already-verified ConfigMaps. This should only be
-// called during the 'Preparing' phase of the CA rotation operation, after kube-controller-manager is ready.
+// WaitUntilKubeRootCAConfigMapsUpdated verifies that the kube-root-ca.crt ConfigMap in the kube-system namespace of the
+// shoot cluster contains the CA bundle published by kube-controller-manager. It labels the confirmed ConfigMap with
+// credentials.gardener.cloud/ca-bundle-name so that retries skip it once verified. This should only be called during the
+// 'Preparing' phase of the CA rotation operation, after kube-controller-manager is ready.
+//
+// Only kube-system's kube-root-ca.crt is waited on (blocking). A customer-provided validating/mutating webhook on
+// ConfigMaps in other namespaces could otherwise block the update indefinitely and hang CA rotation. To still make the
+// customer aware of any namespaces left on the old CA bundle, a best-effort, non-blocking scan of the remaining
+// kube-root-ca.crt ConfigMaps is performed and, if any are stale, a Warning Event is recorded on the Shoot object in the
+// garden cluster (visible via `kubectl describe shoot`).
 func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) error {
 	caBundleSecret, found := b.SecretsManager.Get(v1beta1constants.SecretNameCACluster)
 	if !found {
@@ -99,6 +107,7 @@ func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) err
 
 	configMapList := &corev1.ConfigMapList{}
 	if err := b.ShootClientSet.Client().List(ctx, configMapList,
+		client.InNamespace(metav1.NamespaceSystem),
 		client.MatchingFields{"metadata.name": "kube-root-ca.crt"},
 		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(utils.MustNewRequirement(secretsrotation.LabelKeyCABundleName, selection.NotEquals, caBundleSecret.Name))},
 	); err != nil {
@@ -106,6 +115,9 @@ func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) err
 	}
 
 	if len(configMapList.Items) == 0 {
+		// Best-effort: surface any customer namespaces whose kube-root-ca.crt is still on the old CA bundle. This never
+		// blocks or fails the rotation.
+		b.warnAboutOutdatedKubeRootCAConfigMaps(ctx, caBundleSecret)
 		return nil
 	}
 
@@ -141,5 +153,60 @@ func (b *Botanist) WaitUntilKubeRootCAConfigMapsUpdated(ctx context.Context) err
 	if n := notReady.Load(); n > 0 {
 		return fmt.Errorf("%d kube-root-ca.crt ConfigMap(s) do not yet contain the expected CA bundle", n)
 	}
+
+	// kube-system is up to date; now surface any remaining stale customer namespaces (best-effort, non-blocking).
+	b.warnAboutOutdatedKubeRootCAConfigMaps(ctx, caBundleSecret)
 	return nil
+}
+
+// warnAboutOutdatedKubeRootCAConfigMaps performs a best-effort, read-only scan of the kube-root-ca.crt ConfigMaps in all
+// non-kube-system namespaces of the shoot cluster. For every such ConfigMap that does not yet contain the new CA bundle,
+// its namespace is collected. If any are found, a Warning Event is recorded on the Shoot object in the garden cluster so
+// that the customer can see it via `kubectl describe shoot`.
+//
+// This function must never block, fail, retry or otherwise delay the CA rotation: any error is logged and swallowed. The
+// only blocking part of the rotation is the kube-system wait in WaitUntilKubeRootCAConfigMapsUpdated.
+func (b *Botanist) warnAboutOutdatedKubeRootCAConfigMaps(ctx context.Context, caBundleSecret *corev1.Secret) {
+	if b.EventRecorder == nil {
+		// No garden cluster EventRecorder available (e.g. gardenadm). Nothing to surface to a customer, so skip the scan.
+		return
+	}
+
+	configMapList := &corev1.ConfigMapList{}
+	if err := b.ShootClientSet.Client().List(ctx, configMapList,
+		client.MatchingFields{"metadata.name": "kube-root-ca.crt"},
+		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(utils.MustNewRequirement(secretsrotation.LabelKeyCABundleName, selection.NotEquals, caBundleSecret.Name))},
+	); err != nil {
+		// Best-effort only: log and continue, never fail the rotation.
+		b.Logger.Error(err, "Failed scanning kube-root-ca.crt ConfigMaps for stale customer namespaces; skipping customer-facing warning")
+		return
+	}
+
+	staleNamespaces := sets.New[string]()
+	for _, configMap := range configMapList.Items {
+		if configMap.Namespace == metav1.NamespaceSystem {
+			continue
+		}
+		if caBundleInConfigMap, ok := configMap.Data[secretsutils.DataKeyCertificateCA]; !ok || !bytes.Equal([]byte(caBundleInConfigMap), caBundleSecret.Data[secretsutils.DataKeyCertificateBundle]) {
+			staleNamespaces.Insert(configMap.Namespace)
+		}
+	}
+
+	if staleNamespaces.Len() == 0 {
+		return
+	}
+
+	b.Logger.Info("Found kube-root-ca.crt ConfigMaps in non-kube-system namespaces still on the old CA bundle; recording Event on Shoot", "namespaces", staleNamespaces.UnsortedList())
+
+	b.EventRecorder.Eventf(
+		b.Shoot.GetInfo(),
+		nil,
+		corev1.EventTypeWarning,
+		"KubeRootCACertificateOutdated",
+		"CARotation",
+		"The kube-root-ca.crt ConfigMap in the following namespace(s) could not be confirmed to contain the new cluster CA bundle: %s. "+
+			"A customer-managed admission webhook on ConfigMaps in these namespaces may be blocking the update. "+
+			"Please ensure these ConfigMaps are updated to the new CA bundle, otherwise clients relying on them may lose trust once the CA rotation is completed (rotate-ca-complete).",
+		strings.Join(sets.List(staleNamespaces), ", "),
+	)
 }

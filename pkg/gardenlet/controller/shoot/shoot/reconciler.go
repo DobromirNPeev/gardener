@@ -419,6 +419,7 @@ func (r *Reconciler) initializeOperation(
 		cloudProfile,
 		seed,
 		exposureClass,
+		r.Recorder,
 	)
 	if err != nil {
 		return nil, err

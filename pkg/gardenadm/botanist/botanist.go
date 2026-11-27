@@ -251,6 +251,7 @@ func newBotanist(
 		resources.CloudProfile,
 		nil, // no `Seed` in gardenadm
 		nil, // no `ExposureClass` in gardenadm
+		nil, // gardenadm has no garden cluster EventRecorder
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed initializing operation: %w", err)

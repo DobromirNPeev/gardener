@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
@@ -41,6 +42,7 @@ func Initialize(
 	cloudProfile *gardencorev1beta1.CloudProfile,
 	seed *gardencorev1beta1.Seed,
 	exposureClass *gardencorev1beta1.ExposureClass,
+	eventRecorder events.EventRecorder,
 ) (
 	*Operation,
 	error,
@@ -134,7 +136,8 @@ func Initialize(
 		WithSecrets(gardenSecrets).
 		WithInternalDomain(gardenObj.InternalDomain).
 		WithDefaultDomains(gardenObj.DefaultDomains).
-		WithGarden(gardenObj)
+		WithGarden(gardenObj).
+		WithEventRecorder(eventRecorder)
 
 	if seed != nil {
 		seedObj, err := seedpkg.NewBuilder().WithSeedObject(seed).Build(ctx)

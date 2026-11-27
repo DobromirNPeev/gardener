@@ -376,7 +376,7 @@ var _ = Describe("KubeControllerManager", func() {
 
 		It("should label ConfigMaps that contain the expected bundle", func() {
 			cm1 := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 				Data:       map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
 			}
 			Expect(shootClient.Create(ctx, cm1)).To(Succeed())
@@ -389,7 +389,7 @@ var _ = Describe("KubeControllerManager", func() {
 
 		It("should return an error when a ConfigMap has no ca.crt data", func() {
 			Expect(shootClient.Create(ctx, &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 			})).To(Succeed())
 
 			Expect(botanist.WaitUntilKubeRootCAConfigMapsUpdated(ctx)).To(MatchError(ContainSubstring("1 kube-root-ca.crt ConfigMap(s) do not yet contain the expected CA bundle")))
@@ -397,7 +397,7 @@ var _ = Describe("KubeControllerManager", func() {
 
 		It("should return an error when a ConfigMap does not contain the expected bundle", func() {
 			Expect(shootClient.Create(ctx, &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 				Data:       map[string]string{secretsutils.DataKeyCertificateCA: "old-ca-only"},
 			})).To(Succeed())
 
@@ -414,7 +414,7 @@ var _ = Describe("KubeControllerManager", func() {
 				Data: map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
 			}
 			cmUnlabeled := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "ns2"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: metav1.NamespaceSystem},
 				Data:       map[string]string{secretsutils.DataKeyCertificateCA: string(bundleContent)},
 			}
 			cmOtherName := &corev1.ConfigMap{

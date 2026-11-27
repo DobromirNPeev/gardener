@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -70,6 +71,10 @@ func NewBuilder() *Builder {
 		},
 		shootFunc: func(context.Context, client.Reader, *garden.Garden, *seed.Seed, *corev1.Secret) (*shootpkg.Shoot, error) {
 			return nil, errors.New("shoot object is required but not set")
+		},
+		eventRecorderFunc: func() events.EventRecorder {
+			// The EventRecorder is optional (e.g. gardenadm does not set one), so the default is a nil recorder.
+			return nil
 		},
 	}
 }
@@ -206,6 +211,13 @@ func (b *Builder) WithClock(c clock.Clock) *Builder {
 	return b
 }
 
+// WithEventRecorder sets the eventRecorderFunc attribute at the Builder. The recorder is used to record Events against
+// objects in the garden cluster (e.g. the Shoot). It is optional and may be nil.
+func (b *Builder) WithEventRecorder(recorder events.EventRecorder) *Builder {
+	b.eventRecorderFunc = func() events.EventRecorder { return recorder }
+	return b
+}
+
 // Build initializes a new Operation object.
 func (b *Builder) Build(
 	ctx context.Context,
@@ -224,6 +236,7 @@ func (b *Builder) Build(
 		GardenAPIReader: gardenAPIReader,
 		SeedClientSet:   seedClientSet,
 		ShootClientMap:  shootClientMap,
+		EventRecorder:   b.eventRecorderFunc(),
 	}
 
 	var (

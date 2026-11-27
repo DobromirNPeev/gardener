@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,6 +39,7 @@ type Builder struct {
 	seedFunc                  func(context.Context) (*seed.Seed, error)
 	shootFunc                 func(context.Context, client.Reader, *garden.Garden, *seed.Seed, *corev1.Secret) (*shoot.Shoot, error)
 	clockFunc                 func() clock.Clock
+	eventRecorderFunc         func() events.EventRecorder
 }
 
 // Operation contains all data required to perform an operation on a Shoot cluster.
@@ -63,6 +65,10 @@ type Operation struct {
 	APIServerAddress      string
 	APIServerClusterIP    string
 	SeedNamespaceObject   *corev1.Namespace
+
+	// EventRecorder records Events against objects in the garden cluster (e.g. the Shoot). It may be nil (for example
+	// in gardenadm, which does not run against a garden cluster); callers must nil-check before using it.
+	EventRecorder events.EventRecorder
 
 	// ControlPlaneWildcardCert is a wildcard TLS certificate which is issued for the seed's ingress domain.
 	ControlPlaneWildcardCert *corev1.Secret
