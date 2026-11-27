@@ -57,6 +57,11 @@ var _ = Describe("WebhookRemediation", func() {
 			fail            = admissionregistrationv1.Fail
 			namespacedScope = admissionregistrationv1.NamespacedScope
 
+			expectedMatchCondition = admissionregistrationv1.MatchCondition{
+				Name:       "gardener-exclude-kube-root-ca.crt",
+				Expression: `!(request.resource.group == "" && request.resource.resource == "configmaps" && object != null && has(object.metadata.name) && object.metadata.name == "kube-root-ca.crt")`,
+			}
+
 			validatingWebhookConfiguration *admissionregistrationv1.ValidatingWebhookConfiguration
 			mutatingWebhookConfiguration   *admissionregistrationv1.MutatingWebhookConfiguration
 		)
@@ -128,7 +133,22 @@ var _ = Describe("WebhookRemediation", func() {
 			Expect(mutatingWebhookConfiguration.Annotations).NotTo(HaveKey("gardener.cloud/warning"))
 		})
 
-		It("should succeed when all webhooks are properly configured", func() {
+		It("should remediate a configmaps-catching webhook via matchConditions (name-scoped CEL)", func() {
+			// This webhook intercepts ALL resources (incl. configmaps) in all namespaces except
+			// kube-system/default with failurePolicy=Fail. Because the configmaps matcher entry
+			// {GVR: configmaps, ObjectNames: ["kube-root-ca.crt"]} matches configmaps in EVERY
+			// namespace (nil NamespaceLabels), the webhook is remediated via a name-scoped CEL
+			// matchCondition that skips exactly kube-root-ca.crt, leaving everything else intact.
+			existingNamespaceSelector := &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "kubernetes.io/metadata.name",
+						Values:   []string{"kube-system", "default"},
+						Operator: metav1.LabelSelectorOpNotIn,
+					},
+				},
+			}
+
 			validatingWebhookConfiguration.Webhooks = []admissionregistrationv1.ValidatingWebhook{{
 				Name:           "some-webhook.example.com",
 				FailurePolicy:  &fail,
@@ -147,15 +167,7 @@ var _ = Describe("WebhookRemediation", func() {
 						},
 					},
 				},
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchExpressions: []metav1.LabelSelectorRequirement{
-						{
-							Key:      "kubernetes.io/metadata.name",
-							Values:   []string{"kube-system", "default"},
-							Operator: metav1.LabelSelectorOpNotIn,
-						},
-					},
-				},
+				NamespaceSelector: existingNamespaceSelector.DeepCopy(),
 			}}
 
 			Expect(fakeClient.Create(ctx, validatingWebhookConfiguration)).To(Succeed())
@@ -163,7 +175,16 @@ var _ = Describe("WebhookRemediation", func() {
 			Expect(remediator.Remediate(ctx)).To(Succeed())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(validatingWebhookConfiguration), validatingWebhookConfiguration)).To(Succeed())
-			Expect(validatingWebhookConfiguration.Annotations).NotTo(HaveKey("gardener.cloud/warning"))
+			Expect(validatingWebhookConfiguration.Annotations).To(HaveKey("gardener.cloud/warning"))
+			Expect(validatingWebhookConfiguration.Webhooks[0].MatchConditions).To(ConsistOf(admissionregistrationv1.MatchCondition{
+				Name:       "gardener-exclude-kube-root-ca.crt",
+				Expression: `!(request.resource.group == "" && request.resource.resource == "configmaps" && object != null && has(object.metadata.name) && object.metadata.name == "kube-root-ca.crt")`,
+			}))
+			// failurePolicy and the existing namespaceSelector are left UNTOUCHED (name-scoped
+			// remediation is strictly additive to the matchConditions field).
+			Expect(validatingWebhookConfiguration.Webhooks[0].FailurePolicy).To(Equal(&fail))
+			Expect(validatingWebhookConfiguration.Webhooks[0].NamespaceSelector).To(Equal(existingNamespaceSelector))
+			Expect(validatingWebhookConfiguration.Webhooks[0].ObjectSelector).To(BeNil())
 		})
 
 		Context("remediate offensive webhooks", func() {
@@ -332,6 +353,61 @@ var _ = Describe("WebhookRemediation", func() {
 							{Key: "foo", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"baz"}},
 						},
 					}))
+				})
+
+				It("matchConditions for configmaps", func() {
+					defer test.WithVar(&matchers.WebhookConstraintMatchers, []matchers.WebhookConstraintMatcher{
+						{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectNames: []string{"kube-root-ca.crt"}},
+					})()
+
+					validatingWebhookConfiguration.Webhooks = []admissionregistrationv1.ValidatingWebhook{{
+						Name:          "some-webhook.example.com",
+						FailurePolicy: &fail,
+						Rules: []admissionregistrationv1.RuleWithOperations{{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"configmaps"},
+							},
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						}},
+					}}
+					Expect(fakeClient.Create(ctx, validatingWebhookConfiguration)).To(Succeed())
+
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+
+					Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(validatingWebhookConfiguration), validatingWebhookConfiguration)).To(Succeed())
+					Expect(validatingWebhookConfiguration.Annotations).To(HaveKey("gardener.cloud/warning"))
+					Expect(validatingWebhookConfiguration.Webhooks[0].MatchConditions).To(ConsistOf(expectedMatchCondition))
+					Expect(validatingWebhookConfiguration.Webhooks[0].FailurePolicy).To(Equal(&fail))
+					Expect(validatingWebhookConfiguration.Webhooks[0].ObjectSelector).To(BeNil())
+					Expect(validatingWebhookConfiguration.Webhooks[0].NamespaceSelector).To(BeNil())
+				})
+
+				It("matchConditions for configmaps is idempotent (Remediate twice does not duplicate)", func() {
+					defer test.WithVar(&matchers.WebhookConstraintMatchers, []matchers.WebhookConstraintMatcher{
+						{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectNames: []string{"kube-root-ca.crt"}},
+					})()
+
+					validatingWebhookConfiguration.Webhooks = []admissionregistrationv1.ValidatingWebhook{{
+						Name:          "some-webhook.example.com",
+						FailurePolicy: &fail,
+						Rules: []admissionregistrationv1.RuleWithOperations{{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"configmaps"},
+							},
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						}},
+					}}
+					Expect(fakeClient.Create(ctx, validatingWebhookConfiguration)).To(Succeed())
+
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+
+					Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(validatingWebhookConfiguration), validatingWebhookConfiguration)).To(Succeed())
+					Expect(validatingWebhookConfiguration.Webhooks[0].MatchConditions).To(ConsistOf(expectedMatchCondition))
 				})
 			})
 
@@ -572,6 +648,61 @@ var _ = Describe("WebhookRemediation", func() {
 							{Key: "foo", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"baz"}},
 						},
 					}))
+				})
+
+				It("matchConditions for configmaps", func() {
+					defer test.WithVar(&matchers.WebhookConstraintMatchers, []matchers.WebhookConstraintMatcher{
+						{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectNames: []string{"kube-root-ca.crt"}},
+					})()
+
+					mutatingWebhookConfiguration.Webhooks = []admissionregistrationv1.MutatingWebhook{{
+						Name:          "some-webhook.example.com",
+						FailurePolicy: &fail,
+						Rules: []admissionregistrationv1.RuleWithOperations{{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"configmaps"},
+							},
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						}},
+					}}
+					Expect(fakeClient.Create(ctx, mutatingWebhookConfiguration)).To(Succeed())
+
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+
+					Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(mutatingWebhookConfiguration), mutatingWebhookConfiguration)).To(Succeed())
+					Expect(mutatingWebhookConfiguration.Annotations).To(HaveKey("gardener.cloud/warning"))
+					Expect(mutatingWebhookConfiguration.Webhooks[0].MatchConditions).To(ConsistOf(expectedMatchCondition))
+					Expect(mutatingWebhookConfiguration.Webhooks[0].FailurePolicy).To(Equal(&fail))
+					Expect(mutatingWebhookConfiguration.Webhooks[0].ObjectSelector).To(BeNil())
+					Expect(mutatingWebhookConfiguration.Webhooks[0].NamespaceSelector).To(BeNil())
+				})
+
+				It("matchConditions for configmaps is idempotent (Remediate twice does not duplicate)", func() {
+					defer test.WithVar(&matchers.WebhookConstraintMatchers, []matchers.WebhookConstraintMatcher{
+						{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectNames: []string{"kube-root-ca.crt"}},
+					})()
+
+					mutatingWebhookConfiguration.Webhooks = []admissionregistrationv1.MutatingWebhook{{
+						Name:          "some-webhook.example.com",
+						FailurePolicy: &fail,
+						Rules: []admissionregistrationv1.RuleWithOperations{{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"configmaps"},
+							},
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						}},
+					}}
+					Expect(fakeClient.Create(ctx, mutatingWebhookConfiguration)).To(Succeed())
+
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+					Expect(remediator.Remediate(ctx)).To(Succeed())
+
+					Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(mutatingWebhookConfiguration), mutatingWebhookConfiguration)).To(Succeed())
+					Expect(mutatingWebhookConfiguration.Webhooks[0].MatchConditions).To(ConsistOf(expectedMatchCondition))
 				})
 			})
 		})

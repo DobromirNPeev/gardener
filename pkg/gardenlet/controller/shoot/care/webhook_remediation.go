@@ -13,6 +13,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -103,6 +104,14 @@ func (r *WebhookRemediation) Remediate(ctx context.Context) error {
 				webhookConfig.Webhooks[i].ObjectSelector = extendSelector(webhookConfig.Webhooks[i].ObjectSelector, objectSelector...)
 				webhookConfig.Webhooks[i].NamespaceSelector = extendSelector(webhookConfig.Webhooks[i].NamespaceSelector, namespaceSelector...)
 			}
+
+			if mustRemediateMatchConditions(matchers) {
+				mustPatch = true
+				webhookConfig.Webhooks[i].MatchConditions = extendMatchConditions(
+					webhookConfig.Webhooks[i].MatchConditions,
+					remediate.matchConditions(matchers)...,
+				)
+			}
 		}
 
 		if mustPatch {
@@ -154,6 +163,14 @@ func (r *WebhookRemediation) Remediate(ctx context.Context) error {
 				webhookConfig.Webhooks[i].ObjectSelector = extendSelector(webhookConfig.Webhooks[i].ObjectSelector, objectSelector...)
 				webhookConfig.Webhooks[i].NamespaceSelector = extendSelector(webhookConfig.Webhooks[i].NamespaceSelector, namespaceSelector...)
 			}
+
+			if mustRemediateMatchConditions(matchers) {
+				mustPatch = true
+				webhookConfig.Webhooks[i].MatchConditions = extendMatchConditions(
+					webhookConfig.Webhooks[i].MatchConditions,
+					remediate.matchConditions(matchers)...,
+				)
+			}
 		}
 
 		if mustPatch {
@@ -200,12 +217,29 @@ func mustRemediateTimeoutSeconds(timeoutSeconds *int32) bool {
 }
 
 func mustRemediateSelectors(matchers []webhookmatchers.WebhookConstraintMatcher) bool {
-	return len(matchers) > 0
+	for _, matcher := range matchers {
+		if len(matcher.ObjectLabels) > 0 || len(matcher.NamespaceLabels) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func mustRemediateFailurePolicy(matchers []webhookmatchers.WebhookConstraintMatcher) bool {
 	for _, matcher := range matchers {
+		if len(matcher.ObjectNames) > 0 {
+			continue // name-scoped matchers are remediated via CEL matchConditions, not failurePolicy
+		}
 		if matcher.NamespaceLabels == nil && matcher.ObjectLabels == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func mustRemediateMatchConditions(matchers []webhookmatchers.WebhookConstraintMatcher) bool {
+	for _, matcher := range matchers {
+		if len(matcher.ObjectNames) > 0 {
 			return true
 		}
 	}
@@ -267,6 +301,23 @@ func (r *remediator) selectors(matchers []webhookmatchers.WebhookConstraintMatch
 	}
 
 	return
+}
+
+func (r *remediator) matchConditions(matchers []webhookmatchers.WebhookConstraintMatcher) []admissionregistrationv1.MatchCondition {
+	var conditions []admissionregistrationv1.MatchCondition
+	seen := sets.New[string]()
+	for _, matcher := range matchers {
+		for _, name := range matcher.ObjectNames {
+			mc := newExcludeObjectNameMatchCondition(matcher.GVR, name)
+			if seen.Has(mc.Name) {
+				continue
+			}
+			conditions = append(conditions, mc)
+			seen.Insert(mc.Name)
+			r.reportf("matchConditions", "extended with %q to skip object %q", mc.Name, name)
+		}
+	}
+	return conditions
 }
 
 func (r *remediator) failurePolicy() *admissionregistrationv1.FailurePolicyType {
@@ -348,4 +399,29 @@ func extendSelector(selector *metav1.LabelSelector, requirements ...metav1.Label
 
 	selector.MatchExpressions = append(selector.MatchExpressions, requirements...)
 	return selector
+}
+
+func newExcludeObjectNameMatchCondition(gvr schema.GroupVersionResource, name string) admissionregistrationv1.MatchCondition {
+	return admissionregistrationv1.MatchCondition{
+		Name: "gardener-exclude-" + name,
+		Expression: fmt.Sprintf(
+			`!(request.resource.group == %q && request.resource.resource == %q && object != null && has(object.metadata.name) && object.metadata.name == %q)`,
+			gvr.Group, gvr.Resource, name,
+		),
+	}
+}
+
+func extendMatchConditions(existing []admissionregistrationv1.MatchCondition, additional ...admissionregistrationv1.MatchCondition) []admissionregistrationv1.MatchCondition {
+	present := sets.New[string]()
+	for _, mc := range existing {
+		present.Insert(mc.Name)
+	}
+	for _, mc := range additional {
+		if present.Has(mc.Name) {
+			continue // IDEMPOTENT: do not duplicate on re-run of the care loop
+		}
+		existing = append(existing, mc)
+		present.Insert(mc.Name)
+	}
+	return existing
 }

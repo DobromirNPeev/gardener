@@ -20,6 +20,8 @@ spec:
       shoot:
         reconcileInMaintenanceOnly: true
         respectSyncPeriodOverwrite: true
+      shootCare:
+        webhookRemediatorEnabled: true # e2e: exercise the CEL matchConditions remediation for kube-root-ca.crt
       shootState:
         concurrentSyncs: 0 # we don't need the shootstate controller locally, and enabling it would even distort the results of CPM e2e tests
     etcdConfig:

@@ -65,6 +65,10 @@ var (
 
 		// Leader election of kube-controller-manager, kube-scheduler, cloud-controller-manager, cluster-autoscaler, ...
 		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), NamespaceLabels: kubeSystemNamespaceLabels},
+		// kube-root-ca.crt ConfigMap exists in EVERY namespace, has no stable label and is written during
+		// CA/credentials rotation. A blocking customer webhook on configmaps hangs rotation. Remediate via a
+		// name-scoped CEL matchCondition (see webhook_remediation.go) instead of failurePolicy/objectSelector.
+		{GVR: corev1.SchemeGroupVersion.WithResource("configmaps"), ObjectNames: []string{"kube-root-ca.crt"}},
 		// kube-system and default namespaces for leader election and apiserver in-cluster discovery.
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: defaultNamespaceLabels},
 		{GVR: corev1.SchemeGroupVersion.WithResource("endpoints"), NamespaceLabels: kubeSystemNamespaceLabels},
@@ -191,6 +195,12 @@ type WebhookConstraintMatcher struct {
 	ClusterScoped   bool
 	ObjectLabels    labels.Set
 	NamespaceLabels labels.Set
+
+	// ObjectNames, when non-empty, signals that remediation for this matcher must be done via
+	// name-scoped CEL matchConditions (skipping exactly these object names) instead of failurePolicy
+	// or objectSelector. It does NOT participate in Match() because admission webhook rules are
+	// name-blind (no resourceNames); detection stays at GVR/scope granularity.
+	ObjectNames []string
 }
 
 // Match rule with objLabelSelector and namespaceLabelSelector if

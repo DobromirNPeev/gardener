@@ -335,6 +335,44 @@ var _ = Describe("Constraints", func() {
 				commonTests(gvr, kubeSystemNamespaceProblematic, kubeSystemNamespaceNotProblematic)
 			}
 
+			// configMapsTestTables is a dedicated split of kubeSystemNamespaceTables for the configmaps
+			// resource. The new matcher entry {GVR: configmaps, ObjectNames: ["kube-root-ca.crt"]} has nil
+			// NamespaceLabels, so it matches configmaps webhooks in EVERY namespace regardless of the
+			// namespaceSelector (name-blind detection; remediation is name-scoped via CEL matchConditions).
+			// Therefore the two namespaceSelector-based entries that are NOT problematic for other
+			// kube-system-scoped resources (secrets/serviceaccounts/controllerrevisions/...) ARE problematic
+			// for configmaps. This split keeps the shared kubeSystemNamespaceNotProblematic list untouched
+			// for all other resources while documenting the deliberately extended configmaps behavior
+			// (orchestrator decision 1).
+			configMapsNamespaceProblematic = append(append([]TableEntry{}, kubeSystemNamespaceProblematic...),
+				Entry("not matching namespaceSelector", webhookTestCase{
+					namespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"foo": "bar"},
+					},
+				}),
+				Entry("namespaceSelector excluding name label", webhookTestCase{
+					namespaceSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      "kubernetes.io/metadata.name",
+								Operator: metav1.LabelSelectorOpNotIn,
+								Values:   []string{"kube-system"},
+							},
+						},
+					},
+				}),
+				Entry("configmaps CREATE with failurePolicy 'Fail' is problematic across all namespaces", webhookTestCase{
+					failurePolicy: &failurePolicyFail,
+					operationType: &operationCreate,
+				}),
+			)
+
+			configMapsTestTables = func(gvr schema.GroupVersionResource) {
+				// configmaps has NO non-problematic namespaceSelector-based entries anymore: the
+				// name-scoped matcher makes any configmaps CREATE/UPDATE webhook problematic.
+				commonTests(gvr, configMapsNamespaceProblematic, nil)
+			}
+
 			withoutSelectorsTables = func(gvr schema.GroupVersionResource) {
 				commonTests(gvr, []TableEntry{}, []TableEntry{})
 			}
@@ -342,7 +380,7 @@ var _ = Describe("Constraints", func() {
 
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods"))
 		podsTestTables(corev1.SchemeGroupVersion.WithResource("pods/status"))
-		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
+		configMapsTestTables(corev1.SchemeGroupVersion.WithResource("configmaps"))
 		withoutSelectorsTables(corev1.SchemeGroupVersion.WithResource("endpoints"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("secrets"))
 		kubeSystemNamespaceTables(corev1.SchemeGroupVersion.WithResource("serviceaccounts"))
